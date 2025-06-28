@@ -1,0 +1,208 @@
+name: Recursive Enumeration Worker (3-Layer Parallel)
+
+on:
+  workflow_dispatch:
+    inputs:
+      primary_github_server_url:
+        description: 'The server URL of the primary GitHub instance.'
+        required: true
+      primary_repo_owner:
+        description: 'The owner of the primary repository.'
+        required: true
+      primary_repo_name:
+        description: 'The name of the primary repository.'
+        required: true
+      primary_run_id:
+        description: 'The run ID of the primary workflow.'
+        required: true
+      chunk_package_artifact_name:
+        description: 'The name of the artifact package containing all seed chunks.'
+        required: true
+      secondary_matrix_json:
+        description: 'The JSON string representing the matrix of chunks assigned to this worker.'
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  SECONDARY_MAX_PARALLEL: 20
+
+jobs:
+  process_assigned_chunks_worker:
+    name: Process Assigned Chunks (Assetfinder Worker)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/pcoder7/spider-puredns-actions:latest
+      credentials:
+        username: ${{ secrets.GHCR_USER }}
+        password: ${{ secrets.GHCR_TOKEN }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ env.WORKER_MAX_PARALLEL }}
+      matrix:
+        pair: ${{ fromJson(github.event.inputs.secondary_matrix_json && github.event.inputs.secondary_matrix_json || '[]') }}
+    steps:
+      
+      - name: Display Trigger Payload (Debug)
+        run: |
+          echo "ASSETFINDER WORKER: Received payload:"
+          echo "${{ toJson(github.event.inputs) }}"
+          echo "---"
+          echo "${{ toJson(matrix.pair) }}"
+
+      - name: Checkout repository (Worker's repo)
+        uses: actions/checkout@v3
+
+      - name: Download Full Chunks Package from Primary Account
+        env:
+          GH_TOKEN_PRIMARY_ACCOUNT_READ: ${{ secrets.PAT_FOR_PRIMARY_ACCOUNT_ARTIFACTS_READ }}
+          PRIMARY_REPO_OWNER: ${{ github.event.inputs.primary_repo_owner }}
+          PRIMARY_REPO_NAME: ${{ github.event.inputs.primary_repo_name }}
+          PRIMARY_RUN_ID: ${{ github.event.inputs.primary_run_id }}
+          ARTIFACT_NAME_FROM_PRIMARY: ${{ github.event.inputs.chunk_package_artifact_name }}
+        shell: bash
+        run: |
+          echo "ASSETFINDER WORKER: Downloading artifact '$ARTIFACT_NAME_FROM_PRIMARY' from $PRIMARY_REPO_OWNER/$PRIMARY_REPO_NAME"
+          if ! command -v gh &> /dev/null; then
+            apt-get update -qy && apt-get install -qy curl && \
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+            chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+            apt-get update -qy && apt-get install -qy gh || { echo "ERROR: gh CLI installation failed."; exit 1; }
+          fi
+          echo "$GH_TOKEN_PRIMARY_ACCOUNT_READ" | gh auth login --with-token
+          gh run download "$PRIMARY_RUN_ID" -R "$PRIMARY_REPO_OWNER/$PRIMARY_REPO_NAME" -n "$ARTIFACT_NAME_FROM_PRIMARY" --dir .
+          PACKAGE_FILENAME="$ARTIFACT_NAME_FROM_PRIMARY.tar.gz"
+          if [ -f "$PACKAGE_FILENAME" ]; then
+            echo "Downloaded '$PACKAGE_FILENAME'. Extracting..."
+            tar -xzvf "$PACKAGE_FILENAME"
+          fi
+          echo "Downloaded '$PACKAGE_FILENAME'."
+    
+      - name: Split Chunk and Run Assetfinder with GNU Parallel
+        shell: bash
+        run: |
+          MAIN_CHUNK_FILE=${{ matrix.pair.chunk }}
+          echo "ASSETFINDER WORKER: Processing main chunk '$MAIN_CHUNK_FILE'..."
+          if [ ! -f "$MAIN_CHUNK_FILE" ]; then
+            echo "::error:: Main chunk file '$MAIN_CHUNK_FILE' not found!"
+            exit 1
+          fi
+
+          SUB_CHUNK_DIR="sub-chunks-for-runner"
+          mkdir -p "$SUB_CHUNK_DIR"
+          
+          TOTAL_LINES=$(wc -l < "$MAIN_CHUNK_FILE")
+          LINES_PER_SUB_CHUNK=$(echo "scale=0; ($TOTAL_LINES + 4) / 5" | bc)
+          echo "WORKER: Main chunk has $TOTAL_LINES lines. Splitting into 5 sub-chunks of up to $LINES_PER_SUB_CHUNK lines each."
+          split -l "$LINES_PER_SUB_CHUNK" "$MAIN_CHUNK_FILE" "${SUB_CHUNK_DIR}/sub_chunk_"
+
+          RAW_RESULTS_FILE="raw_assetfinder_results.txt"
+          ls ${SUB_CHUNK_DIR}/sub_chunk_* | parallel -j 5 'assetfinder -l {}' > "$RAW_RESULTS_FILE"
+
+          echo "INFO: Sorting raw results into root-domain specific files..."
+          mkdir -p results
+          if [ ! -s "$RAW_RESULTS_FILE" ]; then
+            echo "INFO: Assetfinder found no new subdomains in this chunk."
+            exit 0
+          fi
+          
+          dsieve -if "$RAW_RESULTS_FILE" -f 2 | sort -u > temp_root_domains.txt
+          while read -r parent; do
+            if [ -z "$parent" ]; then continue; fi
+            mkdir -p "results/$parent"
+            outfile="results/$parent/all_resolved.txt"
+            grep -E "(^|\\.)${parent//./\\.}(\$)" "$RAW_RESULTS_FILE" | anew -q "$outfile"
+          done < temp_root_domains.txt
+      
+      - name: Compute SAFE_CHUNK (no slashes)
+        run: |
+          SAFE_CHUNK="${{ matrix.pair.chunk }}"
+          SAFE_CHUNK="$(echo "$SAFE_CHUNK" | tr '/' '_')"
+          echo "SAFE_CHUNK=$SAFE_CHUNK" >> $GITHUB_ENV              
+
+      - name: Upload Worker Results (as artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: secondary_assetfinder_results_${{ env.SAFE_CHUNK }}
+          path: results/
+          retention-days: 1
+
+  commit_all_worker_results:
+    name: Commit All Worker Results
+    needs: process_assigned_chunks_worker
+    if: always()
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/pcoder7/spider-puredns-actions:latest
+      credentials:
+        username: ${{ secrets.GHCR_USER }}
+        password: ${{ secrets.GHCR_TOKEN }}
+    steps:
+      - name: Checkout repository (Worker's repo)
+        uses: actions/checkout@v3
+
+      - name: Download all worker artifacts from this run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: secondary_assetfinder_results_*
+          path: temp_results
+      
+      - name: Organize and Push Results to store-recon  
+        shell: bash  
+        env:  
+          STORE_RECON_PAT: ${{ secrets.STORE_RECON_PAT }}  
+          STORE: ${{ secrets.STORE }}  
+          USERNAME: ${{ secrets.USERNAME }}  
+        run: |  
+          echo "Organizing downloaded results..."
+          
+          mkdir -p results
+          find temp_results -type f -name "puredns_result.txt" | while read -r filepath; do
+            parent="$(basename "$(dirname "$filepath")")"
+            mkdir -p "results/$parent"
+            cat "$filepath" | anew -q "results/$parent/puredns_result.txt"
+          done
+
+          if [ ! -d "results" ] || [ -z "$(ls -A results)" ]; then
+            echo "Results directory is empty. Nothing to push."
+            exit 0
+          fi
+
+          git config --global user.name "Assetfinder Worker Bot"
+          git config --global user.email "actions-bot@users.noreply.github.com"
+          
+          TMP_DIR="$(mktemp -d)"
+          echo "Cloning store-recon into $TMP_DIR"
+          git clone "https://x-access-token:${STORE_RECON_PAT}@github.com/${USERNAME}/${STORE}.git" "$TMP_DIR"
+          cd "$TMP_DIR"
+
+          for i in {1..5}; do
+            git fetch origin main && git checkout main && git pull --rebase origin main
+
+            WORKSPACE_RESULTS="${GITHUB_WORKSPACE}/results"
+            find "$WORKSPACE_RESULTS" -type f -name "puredns_result.txt" | while read -r filepath; do
+              rel="${filepath#"$WORKSPACE_RESULTS/"}"
+              mkdir -p "results/$(dirname "$rel")"
+              sort -u -o "results/$rel" "results/$rel" "$filepath" 2>/dev/null || cp "$filepath" "results/$rel"
+            done
+
+            git add results/
+            if git diff --cached --quiet; then
+              echo "No changes to commit."
+              exit 0
+            fi
+
+            git commit -m "feat(worker): Add subdomains from recursive scan (Run ID ${{ github.event.inputs.primary_run_id }})"
+            if git push origin main; then
+              echo "Pushed to store-recon successfully on attempt #$i."
+              exit 0
+            else
+              echo "Push failed on attempt #$i, retrying..."
+              git reset --hard HEAD~1
+            fi
+          done
+          echo "::error::Could not push results to store-recon after 5 attempts."
+          exit 1
