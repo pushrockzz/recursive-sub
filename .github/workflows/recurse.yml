@@ -153,8 +153,8 @@ jobs:
       - name: Organize and Push Results to store-recon  
         shell: bash  
         env:  
-          STORE_RECON_PAT: ${{ secrets.STORE_RECON_PAT }}  
-          STORE: ${{ secrets.STORE }}  
+          STORE_RECON_PAT: ${{ secrets.PAT_FOR_SECONDARY_ACCOUNT_REPO }}  
+          STORE: ${{ secrets.STORE }}
           USERNAME: ${{ secrets.USERNAME }}  
         run: |  
           echo "Organizing downloaded results..."
