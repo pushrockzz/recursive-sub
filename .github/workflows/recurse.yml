@@ -100,7 +100,7 @@ jobs:
           split -l "$LINES_PER_SUB_CHUNK" "$MAIN_CHUNK_FILE" "${SUB_CHUNK_DIR}/sub_chunk_"
 
           RAW_RESULTS_FILE="raw_assetfinder_results.txt"
-          ls ${SUB_CHUNK_DIR}/sub_chunk_* | parallel -j 5 'subfinder -l "{}" -silent' > "$RAW_RESULTS_FILE"
+          ls ${SUB_CHUNK_DIR}/sub_chunk_* | parallel -j 5 'subfinder -dL "{}" -silent' > "$RAW_RESULTS_FILE"
 
           echo "INFO: Sorting raw results into root-domain specific files..."
           mkdir -p results
