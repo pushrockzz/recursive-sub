@@ -251,11 +251,7 @@ jobs:
     needs: merge_results
     if: needs.merge_results.outputs.has_results == 'true'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/pcoder7/spider-puredns-actions:latest
-      credentials:
-        username: ${{ secrets.GHCR_USER }}
-        password: ${{ secrets.GHCR_TOKEN }}
+
     steps:
       - name: Download the consolidated secondary results artifact
         uses: actions/download-artifact@v4
