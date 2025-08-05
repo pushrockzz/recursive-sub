@@ -194,12 +194,13 @@ jobs:
 
           echo "▶ Running smap on non‑CDN IPs…"
 
-          rustscan -a "$TMP_NONCDN" -p 80,443 --no-banner  -t 1000 --tries 1 -u 20000 --scan-order "Random"  -b 100 --greppable --accessible > "$TMP_RUSTSCAN"
-          
-          cat "$TMP_RUSTSCAN" | awk -F ' -> ' '{ gsub(/[\[\]]/, "", $2); n = split($2, p, ","); for(i=1;i<=n;i++) print $1 ":" p[i] }' | anew -q "$TMP_SMAP_NONCDN"
-          
-          # smap -iL "$TMP_NONCDN" -oP "$TMP_SMAP_NONCDN"
+          smap -iL "$TMP_NONCDN" -oP "$TMP_SMAP_NONCDN" || true
 
+          rustscan -a "$TMP_NONCDN" -p 80,443 --no-banner  -t 1000 --tries 1 -u 20000 --scan-order "Random"  -b 100 --greppable --accessible > "$TMP_RUSTSCAN" || true
+          
+          cat "$TMP_RUSTSCAN" | awk -F ' -> ' '{ gsub(/[\[\]]/, "", $2); n = split($2, p, ","); for(i=1;i<=n;i++) print $1 ":" p[i] }' | anew -q "$TMP_SMAP_NONCDN" || true
+          
+          
           echo "✅ All done. TMP_SMAP_NONCDN contains $(wc -l < "$TMP_SMAP_NONCDN") IP" 
 
           echo "==================================================================="
