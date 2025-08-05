@@ -26,9 +26,6 @@ permissions:
   contents: write
   actions: read
 
-env:
-  SECONDARY_MAX_PARALLEL: 20
-
 jobs:
   process_assigned_chunks_worker:
     name: Process Assigned Chunks (Worker)
@@ -40,7 +37,7 @@ jobs:
         password: ${{ secrets.GHCR_TOKEN }}
     strategy:
       fail-fast: false
-      max-parallel: ${{ env.SECONDARY_MAX_PARALLEL }}
+      max-parallel: 20
       matrix:
         pair: ${{ fromJson(github.event.inputs.secondary_matrix_json && github.event.inputs.secondary_matrix_json || '[]') }}
     steps:
