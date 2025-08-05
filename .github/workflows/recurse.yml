@@ -94,7 +94,7 @@ jobs:
         id: run_parallel
         shell: bash
         run: |
-          set -euo pipefail
+        
           CHUNK_FILE_PATH=${{ matrix.pair.chunk }}
           echo "Processing chunk '$CHUNK_FILE_PATH'..."
           if [ ! -f "$CHUNK_FILE_PATH" ]; then
@@ -146,7 +146,7 @@ jobs:
         id: map_subdomains_cdn
         shell: bash
         run: |
-          set -euo pipefail
+      
           trap '' SIGPIPE
 
           MASSDNS_FILE="massdns_file.txt"
@@ -302,12 +302,14 @@ jobs:
         id: consolidate
         shell: bash
         run: |
-          set -e; mkdir -p final_results
+          
+          mkdir -p final_results
           if [ ! -d "temp-aggregated-results" ] || [ -z "$(ls -A temp-aggregated-results)" ]; then
             echo "::warning:: No result artifacts were found from the secondary worker. Nothing to merge."
             echo "has_results=false" >> $GITHUB_OUTPUT
             exit 0
           fi
+          
           echo "INFO: Aggregating all downloaded secondary worker results..."
           for filepath in $(find temp-aggregated-results -type f -name "puredns_results.txt"); do
             parent_domain=$(basename "$(dirname "$filepath")")
@@ -315,21 +317,25 @@ jobs:
             mkdir -p "final_results/$parent_domain"
             cat "$filepath" >> "$dest_file"
           done
+          
           for filepath in $(find temp-aggregated-results -type f -name "subdomain_ports.txt"); do
             parent_domain=$(basename "$(dirname "$filepath")")
             dest_file="final_results/$parent_domain/subdomain_ports.txt"
             mkdir -p "final_results/$parent_domain"
             cat "$filepath" >> "$dest_file"
           done
+          
           echo "INFO: De-duplicating all aggregated files..."
           for final_file in $(find final_results -type f -name "*.txt"); do
               sort -u -o "$final_file" "$final_file"
           done
+          
           if [ -z "$(ls -A final_results)" ]; then
             echo "::warning:: Result artifacts were downloaded, but they contained no valid data to merge."
             echo "has_results=false" >> $GITHUB_OUTPUT
             exit 0
           fi
+          
           echo "has_results=true" >> $GITHUB_OUTPUT
           echo "✅ Successfully consolidated results from the secondary worker."
 
@@ -363,7 +369,7 @@ jobs:
           STORE: ${{ secrets.STORE }}
           CORRELATION_ID: ${{ github.event.inputs.primary_run_id }}
         run: |
-          set -e
+       
           RESULTS_DIR="${GITHUB_WORKSPACE}/final_results"
           if [ ! -d "$RESULTS_DIR" ] || [ -z "$(ls -A "$RESULTS_DIR")" ]; then
             echo "::warning:: Results directory is empty or does not exist. Nothing to commit."
