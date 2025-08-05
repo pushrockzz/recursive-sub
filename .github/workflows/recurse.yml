@@ -31,7 +31,7 @@ env:
 
 jobs:
   process_assigned_chunks_worker:
-    name: Process Assigned Chunks (Assetfinder Worker)
+    name: Process Assigned Chunks (Worker)
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/pcoder7/spider-puredns-actions:latest
@@ -40,20 +40,30 @@ jobs:
         password: ${{ secrets.GHCR_TOKEN }}
     strategy:
       fail-fast: false
-      max-parallel: ${{ env.WORKER_MAX_PARALLEL }}
+      max-parallel: ${{ env.SECONDARY_MAX_PARALLEL }}
       matrix:
         pair: ${{ fromJson(github.event.inputs.secondary_matrix_json && github.event.inputs.secondary_matrix_json || '[]') }}
     steps:
-      
-      - name: Display Trigger Payload (Debug)
-        run: |
-          echo "ASSETFINDER WORKER: Received payload:"
-          echo "${{ toJson(github.event.inputs) }}"
-          echo "---"
-          echo "${{ toJson(matrix.pair) }}"
-
-      - name: Checkout repository (Worker's repo)
+      - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Cache Go modules & binaries
+        uses: actions/cache@v3
+        with:
+          path: |
+            $HOME/go/pkg/mod
+            ~/.cache/go-build
+            $HOME/go/bin
+          key: ${{ runner.os }}-go-cache-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-go-cache-
 
       - name: Download Full Chunks Package from Primary Account
         env:
@@ -64,7 +74,7 @@ jobs:
           ARTIFACT_NAME_FROM_PRIMARY: ${{ github.event.inputs.chunk_package_artifact_name }}
         shell: bash
         run: |
-          echo "ASSETFINDER WORKER: Downloading artifact '$ARTIFACT_NAME_FROM_PRIMARY' from $PRIMARY_REPO_OWNER/$PRIMARY_REPO_NAME"
+          echo "WORKER: Downloading artifact '$ARTIFACT_NAME_FROM_PRIMARY' from $PRIMARY_REPO_OWNER/$PRIMARY_REPO_NAME"
           if ! command -v gh &> /dev/null; then
             apt-get update -qy && apt-get install -qy curl && \
             curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -78,62 +88,171 @@ jobs:
           if [ -f "$PACKAGE_FILENAME" ]; then
             echo "Downloaded '$PACKAGE_FILENAME'. Extracting..."
             tar -xzvf "$PACKAGE_FILENAME"
-          fi
-          echo "Downloaded '$PACKAGE_FILENAME'."
-    
-      - name: Split Chunk and Run Assetfinder with GNU Parallel
-        shell: bash
-        run: |
-          MAIN_CHUNK_FILE=${{ matrix.pair.chunk }}
-          echo "ASSETFINDER WORKER: Processing main chunk '$MAIN_CHUNK_FILE'..."
-          if [ ! -f "$MAIN_CHUNK_FILE" ]; then
-            echo "::error:: Main chunk file '$MAIN_CHUNK_FILE' not found!"
+          else
+            echo "::error:: Failed to download or find artifact tarball '$PACKAGE_FILENAME'"
             exit 1
           fi
 
-          SUB_CHUNK_DIR="sub-chunks-for-runner"
-          mkdir -p "$SUB_CHUNK_DIR"
-          
-          TOTAL_LINES=$(wc -l < "$MAIN_CHUNK_FILE")
-          LINES_PER_SUB_CHUNK=$(echo "scale=0; ($TOTAL_LINES + 4) / 5" | bc)
-          echo "WORKER: Main chunk has $TOTAL_LINES lines. Splitting into 5 sub-chunks of up to $LINES_PER_SUB_CHUNK lines each."
-          split -l "$LINES_PER_SUB_CHUNK" "$MAIN_CHUNK_FILE" "${SUB_CHUNK_DIR}/sub_chunk_"
-
-          RAW_RESULTS_FILE="raw_assetfinder_results.txt"
-          ls ${SUB_CHUNK_DIR}/sub_chunk_* | parallel -j 5 'subfinder -dL "{}" -silent' > "$RAW_RESULTS_FILE"
-
-          echo "INFO: Sorting raw results into root-domain specific files..."
-          mkdir -p results
-          if [ ! -s "$RAW_RESULTS_FILE" ]; then
-            echo "INFO: Assetfinder found no new subdomains in this chunk."
-            exit 0
+      - name: Run Findomain with GNU Parallel on Chunk
+        id: run_parallel
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHUNK_FILE_PATH=${{ matrix.pair.chunk }}
+          echo "Processing chunk '$CHUNK_FILE_PATH'..."
+          if [ ! -f "$CHUNK_FILE_PATH" ]; then
+            echo "ERROR: Chunk file '$CHUNK_FILE_PATH' not found!"
+            exit 1
           fi
-          
-          dsieve -if "$RAW_RESULTS_FILE" -f 2 | sort -u > temp_root_domains.txt
+          SUB_CHUNK_DIR="sub-chunks"
+          RAW_RESULTS_FILE="raw_subdomain_results.txt"
+          export SUB_CHUNK_DIR
+          rm -rf "$SUB_CHUNK_DIR"
+          mkdir -p "$SUB_CHUNK_DIR" "${SUB_CHUNK_DIR}/raw_results"
+          TOTAL_LINES=$(wc -l < "$CHUNK_FILE_PATH")
+          LINES_PER_SUB_CHUNK=$(awk -v t="$TOTAL_LINES" 'BEGIN { print int((t+4)/5) }')
+          echo "WORKER: Main chunk has $TOTAL_LINES lines. Splitting into 5 sub-chunks of up to $LINES_PER_SUB_CHUNK lines each."
+          split -l "$LINES_PER_SUB_CHUNK" "$CHUNK_FILE_PATH" "${SUB_CHUNK_DIR}/sub_chunk_"
+          parallel -j 5 'findomain --file "{}" --external-subdomains --quiet --unique-output "${SUB_CHUNK_DIR}/raw_results/result_{#}.txt"' ::: ${SUB_CHUNK_DIR}/sub_chunk_*
+          cat "$SUB_CHUNK_DIR/raw_results"/result_*.txt | sort -u > "$RAW_RESULTS_FILE"
+          echo "✅ All done. Consolidated into $RAW_RESULTS_FILE with $(wc -l < "$RAW_RESULTS_FILE") subdomains"
+
+      - name: Install Tools
+        run: |
+          if ! command -v smap >/dev/null; then go install -v github.com/s0md3v/smap/cmd/smap@latest; fi
+          if ! command -v inscope >/dev/null; then go install -v github.com/tomnomnom/hacks/inscope@latest; fi
+          if ! command -v anew >/dev/null; then go install -v github.com/tomnomnom/anew@latest; fi
+          if ! command -v cut-cdn >/dev/null; then go install github.com/ImAyrix/cut-cdn@latest; fi
+          if ! command -v naabu >/dev/null; then go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest; fi
+          pip3 install --no-cache-dir ipaddress
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Resolve Discovered Subdomains with PureDNS
+        id: run_puredns
+        shell: bash
+        run: |
+          RAW_RESULTS_FILE="raw_subdomain_results.txt"
+          PUREDNS_FILE="puredns_file.txt"
+          RESOLVED_FILE="puredns_resolved.txt"
+          TMP_CLEANMASSDNS=$(mktemp)
+          MASSDNS="massdns.txt"
+          MASSDNS_FILE="massdns_file.txt"
+          if [ ! -s "$RAW_RESULTS_FILE" ]; then echo "INFO: Raw results file is empty. Nothing to resolve."; touch "$RESOLVED_FILE"; exit 0; fi
+          wget -qO resolvers.txt https://raw.githubusercontent.com/and0x00/resolvers.txt/refs/heads/main/resolvers.txt
+          puredns resolve "$RAW_RESULTS_FILE" -r resolvers.txt --rate-limit 3000 --skip-validation --skip-wildcard-filter --write "$PUREDNS_FILE" --write-massdns "$MASSDNS" --quiet >/dev/null 2>&1
+          cat "$PUREDNS_FILE" | inscope -s .scope > "$RESOLVED_FILE" || true
+          awk 'NF { sub(/\.$/,"",$1); print }' "$MASSDNS" > "$TMP_CLEANMASSDNS"
+          awk ' {gsub(/\r$/,"");sub(/^[ \t]+/,"");sub(/[ \t]+$/,"")} FNR==NR{if($0)patterns[++c]=$0;next} !setup{regex="";for(i=1;i<=c;i++){regex=regex (i>1?"|":"") "("patterns[i]")"};if(regex=="")regex="^\b$";setup=1} $2=="A" && $1~regex ' .scope "$TMP_CLEANMASSDNS" | anew -q "$MASSDNS_FILE"
+          rm -f "$TMP_CLEANMASSDNS" "$MASSDNS" "$PUREDNS_FILE"
+
+      - name: Map subdomains to ports with CDN filtering
+        id: map_subdomains_cdn
+        shell: bash
+        run: |
+          set -euo pipefail; trap '' SIGPIPE; MASSDNS_FILE="massdns_file.txt"; SMAP_FILE="smap.txt"; OUTPUT="subdomain_ports.txt"; TMP_IP2SUB=$(mktemp); TMP_IP_ONLY=$(mktemp); TMP_NONCDN=$(mktemp); TMP_CDN=$(mktemp); TMP_SMAP_NONCDN=$(mktemp); TMP_RUSTSCAN=$(mktemp)
+          awk '{ print $3, $1 }' "$MASSDNS_FILE" | sort -k1,1 > "$TMP_IP2SUB"
+          cut -d' ' -f1 "$TMP_IP2SUB" | sort -u > "$TMP_IP_ONLY"
+          cat "$TMP_IP_ONLY" | cut-cdn -ua -t 50 -silent -o "$TMP_NONCDN"
+          cat "$TMP_IP_ONLY" | anew -d "$TMP_NONCDN" > "$TMP_CDN"
+          rustscan -a "$TMP_NONCDN" -p 80,443 --no-banner -t 1000 --tries 1 -u 20000 --scan-order "Random" -b 100 --greppable --accessible > "$TMP_RUSTSCAN"
+          cat "$TMP_RUSTSCAN" | awk -F ' -> ' '{ gsub(/[\[\]]/, "", $2); n = split($2, p, ","); for(i=1;i<=n;i++) print $1 ":" p[i] }' | anew -q "$TMP_SMAP_NONCDN"
+          cat "$TMP_SMAP_NONCDN" "$TMP_CDN" | sort -u > "$SMAP_FILE"
+          awk -F: ' NF==2 { print $1, $2 } NF==1 { print $1, "" } ' "$SMAP_FILE" | sort -k1,1 | join - "$TMP_IP2SUB" | { awk ' NF >= 2 { if (NF == 3 && $2 ~ /^[0-9]+$/) { print $3 ":" $2 } else { print $NF } }' } > "$OUTPUT"
+          rm -f "$TMP_IP2SUB" "$TMP_IP_ONLY" "$TMP_NONCDN" "$TMP_CDN" "$TMP_SMAP_NONCDN" "$TMP_RUSTSCAN"
+
+      - name: Sort Resolved Results into Root Domain Folders
+        shell: bash
+        run: |
+          RESOLVED_FILE="puredns_resolved.txt"; PORTS_INPUT_FILE="subdomain_ports.txt"; mkdir -p results
+          if [ ! -s "$RESOLVED_FILE" ]; then echo "INFO: PureDNS found no resolvable domains in this chunk."; exit 0; fi
+          dsieve -if "$RESOLVED_FILE" -f 2 | sort -u > temp_root_domains.txt
           while read -r parent; do
             if [ -z "$parent" ]; then continue; fi
             mkdir -p "results/$parent"
-            outfile="results/$parent/all_resolved.txt"
-            grep -E "(^|\\.)${parent//./\\.}(\$)" "$RAW_RESULTS_FILE" | anew -q "$outfile"
+            outfile="results/$parent/puredns_results.txt"
+            grep -E "(^|\\.)${parent//./\\.}(\$)" --color=never "$RESOLVED_FILE" | anew -q "$outfile" || true
+            ports_outfile="results/$parent/subdomain_ports.txt"
+            grep -E "(^|\\.)${parent//./\\.}(\:|\$)" --color=never "$PORTS_INPUT_FILE" | anew -q "$ports_outfile" || true
           done < temp_root_domains.txt
-      
+
       - name: Compute SAFE_CHUNK (no slashes)
         run: |
           SAFE_CHUNK="${{ matrix.pair.chunk }}"
           SAFE_CHUNK="$(echo "$SAFE_CHUNK" | tr '/' '_')"
-          echo "SAFE_CHUNK=$SAFE_CHUNK" >> $GITHUB_ENV              
+          echo "SAFE_CHUNK=$SAFE_CHUNK" >> $GITHUB_ENV
 
-      - name: Upload Worker Results (as artifact)
+      - name: Upload Secondary Account Results
         uses: actions/upload-artifact@v4
         with:
-          name: secondary_assetfinder_results_${{ env.SAFE_CHUNK }}
+          name: recon-results-secondary-${{ env.SAFE_CHUNK }}
           path: results/
           retention-days: 1
 
-  commit_all_worker_results:
-    name: Commit All Worker Results
+  merge_results:
+    name: Merge All Secondary Worker Results
+    runs-on: ubuntu-latest
     needs: process_assigned_chunks_worker
     if: always()
+    outputs:
+      has_results: ${{ steps.consolidate.outputs.has_results }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Download all result artifacts from this worker account
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'recon-results-secondary-*' # Downloads only this worker's artifacts
+          path: temp-aggregated-results
+          merge-multiple: true
+
+      - name: Consolidate all results into root domain folders
+        id: consolidate
+        shell: bash
+        run: |
+          set -e; mkdir -p final_results
+          if [ ! -d "temp-aggregated-results" ] || [ -z "$(ls -A temp-aggregated-results)" ]; then
+            echo "::warning:: No result artifacts were found from the secondary worker. Nothing to merge."
+            echo "has_results=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "INFO: Aggregating all downloaded secondary worker results..."
+          for filepath in $(find temp-aggregated-results -type f -name "puredns_results.txt"); do
+            parent_domain=$(basename "$(dirname "$filepath")")
+            dest_file="final_results/$parent_domain/puredns_results.txt"
+            mkdir -p "final_results/$parent_domain"
+            cat "$filepath" >> "$dest_file"
+          done
+          for filepath in $(find temp-aggregated-results -type f -name "subdomain_ports.txt"); do
+            parent_domain=$(basename "$(dirname "$filepath")")
+            dest_file="final_results/$parent_domain/subdomain_ports.txt"
+            mkdir -p "final_results/$parent_domain"
+            cat "$filepath" >> "$dest_file"
+          done
+          echo "INFO: De-duplicating all aggregated files..."
+          for final_file in $(find final_results -type f -name "*.txt"); do
+              sort -u -o "$final_file" "$final_file"
+          done
+          if [ -z "$(ls -A final_results)" ]; then
+            echo "::warning:: Result artifacts were downloaded, but they contained no valid data to merge."
+            echo "has_results=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "has_results=true" >> $GITHUB_OUTPUT
+          echo "✅ Successfully consolidated results from the secondary worker."
+
+      - name: Upload Final Consolidated Secondary Artifact
+        if: steps.consolidate.outputs.has_results == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: consolidated-secondary-recon-results
+          path: final_results/
+          retention-days: 1
+
+  commit_all_results:
+    name: Commit Secondary Worker Results
+    needs: merge_results
+    if: needs.merge_results.outputs.has_results == 'true'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/pcoder7/spider-puredns-actions:latest
@@ -141,68 +260,79 @@ jobs:
         username: ${{ secrets.GHCR_USER }}
         password: ${{ secrets.GHCR_TOKEN }}
     steps:
-      - name: Checkout repository (Worker's repo)
-        uses: actions/checkout@v3
-
-      - name: Download all worker artifacts from this run
+      - name: Download the consolidated secondary results artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: secondary_assetfinder_results_*
-          path: temp_results
-      
-      - name: Organize and Push Results to store-recon  
-        shell: bash  
-        env:  
-          STORE_RECON_PAT: ${{ secrets.PAT_FOR_SECONDARY_ACCOUNT_REPO }}  
-          STORE: ${{ secrets.STORE }}
-          USERNAME: ${{ secrets.USERNAME }}  
-        run: |  
-          echo "Organizing downloaded results..."
-          
-          mkdir -p results
-          find temp_results -type f -name "puredns_result.txt" | while read -r filepath; do
-            parent="$(basename "$(dirname "$filepath")")"
-            mkdir -p "results/$parent"
-            cat "$filepath" | anew -q "results/$parent/puredns_result.txt"
-          done
+          name: consolidated-secondary-recon-results
+          path: final_results
 
-          if [ ! -d "results" ] || [ -z "$(ls -A results)" ]; then
-            echo "Results directory is empty. Nothing to push."
+      - name: Organize and Push to store-recon
+        shell: bash
+        env:
+          # Use the same PAT as primary for simplicity, assuming it has write access
+          STORE_RECON_PAT: ${{ secrets.PAT_FOR_SECONDARY_ACCOUNT_REPO }}
+          ACCOUNT2_USERNAME: ${{ secrets.ACCOUNT2_REPO_OWNER }}
+          STORE: ${{ secrets.STORE }}
+          CORRELATION_ID: ${{ github.event.inputs.primary_run_id }}
+        run: |
+          set -e
+          RESULTS_DIR="${GITHUB_WORKSPACE}/final_results"
+          if [ ! -d "$RESULTS_DIR" ] || [ -z "$(ls -A "$RESULTS_DIR")" ]; then
+            echo "::warning:: Results directory is empty or does not exist. Nothing to commit."
             exit 0
           fi
-
-          git config --global user.name "Assetfinder Worker Bot"
+          
+          echo "Cloning ${STORE} to commit results from secondary worker..."
+          git config --global user.name "Secondary Worker Bot"
           git config --global user.email "actions-bot@users.noreply.github.com"
           
           TMP_DIR="$(mktemp -d)"
-          echo "Cloning store-recon into $TMP_DIR"
-          git clone "https://x-access-token:${STORE_RECON_PAT}@github.com/${USERNAME}/${STORE}.git" "$TMP_DIR"
+          git clone "https://x-access-token:${STORE_RECON_PAT}@github.com/${ACCOUNT2_USERNAME}/${STORE}.git" "$TMP_DIR"
           cd "$TMP_DIR"
+          
+          echo "Merging new secondary results into the repository..."
+          for domain_dir in "${RESULTS_DIR}"/*; do
+            if [ ! -d "$domain_dir" ]; then continue; fi
+            domain_name=$(basename "$domain_dir")
+            dest_repo_dir="results/$domain_name"
+            mkdir -p "$dest_repo_dir"
 
-          for i in {1..5}; do
-            git fetch origin main && git checkout main && git pull --rebase origin main
-
-            WORKSPACE_RESULTS="${GITHUB_WORKSPACE}/results"
-            find "$WORKSPACE_RESULTS" -type f -name "puredns_result.txt" | while read -r filepath; do
-              rel="${filepath#"$WORKSPACE_RESULTS/"}"
-              mkdir -p "results/$(dirname "$rel")"
-              sort -u -o "results/$rel" "results/$rel" "$filepath" 2>/dev/null || cp "$filepath" "results/$rel"
-            done
-
-            git add results/
-            if git diff --cached --quiet; then
-              echo "No changes to commit."
-              exit 0
+            # --- SAFE MERGE 1: puredns_results.txt -> all_subdomains.txt ---
+            source_puredns_file="$domain_dir/puredns_results.txt"
+            dest_all_subs_file="$dest_repo_dir/all_subdomains.txt"
+            if [ -s "$source_puredns_file" ]; then
+              echo "  -> Merging puredns results into '$dest_all_subs_file'"
+              temp_merged_file_1=$(mktemp)
+              if [ -f "$dest_all_subs_file" ]; then
+                cat "$source_puredns_file" "$dest_all_subs_file" | sort -u > "$temp_merged_file_1"
+              else
+                sort -u "$source_puredns_file" > "$temp_merged_file_1"
+              fi
+              mv "$temp_merged_file_1" "$dest_all_subs_file"
             fi
-
-            git commit -m "feat(worker): Add subdomains from recursive scan (Run ID ${{ github.event.inputs.primary_run_id }})"
-            if git push origin main; then
-              echo "Pushed to store-recon successfully on attempt #$i."
-              exit 0
-            else
-              echo "Push failed on attempt #$i, retrying..."
-              git reset --hard HEAD~1
+            
+            # --- SAFE MERGE 2: subdomain_ports.txt -> puredns_result.txt ---
+            source_ports_file="$domain_dir/subdomain_ports.txt"
+            dest_puredns_file="$dest_repo_dir/puredns_result.txt"
+            if [ -s "$source_ports_file" ]; then
+              echo "  -> Merging port data into '$dest_puredns_file'"
+              temp_merged_file_2=$(mktemp)
+              if [ -f "$dest_puredns_file" ]; then
+                cat "$source_ports_file" "$dest_puredns_file" | sort -u > "$temp_merged_file_2"
+              else
+                sort -u "$source_ports_file" > "$temp_merged_file_2"
+              fi
+              mv "$temp_merged_file_2" "$dest_puredns_file"
             fi
           done
-          echo "::error::Could not push results to store-recon after 5 attempts."
-          exit 1
+          
+          if git diff --cached --quiet && git diff --quiet; then
+            echo "No new unique data to commit from secondary worker."
+            exit 0
+          fi
+          
+          echo "Committing and pushing changes from secondary worker to ${STORE}..."
+          git add results/
+          git commit -m "feat(worker-secondary): Add new assets from Correlation ID: ${CORRELATION_ID}"
+          git push -v origin main
+          echo "✅ Successfully pushed new secondary results to ${STORE}."
