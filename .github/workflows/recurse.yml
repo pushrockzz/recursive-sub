@@ -442,7 +442,7 @@ commit_all_results:
           for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
             echo "[Attempt $i/$MAX_ATTEMPTS] Committing and pushing changes from secondary worker..."
             git pull --rebase origin main
-            git commit -m "feat: Add new assets from Recursive recon scan from Correlation ID: ${{ github.run_id }}" || true
+            git commit -m "feat: Add new assets from Recursive recon scan from Correlation ID: ${CORRELATION_ID}" || true
             if git push -v origin main; then
               echo "✅ Successfully pushed new secondary results to ${STORE} on attempt $i."
               exit 0
