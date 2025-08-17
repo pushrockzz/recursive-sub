@@ -348,7 +348,7 @@ jobs:
           path: final_results/
           retention-days: 1
 
-  commit_all_results:
+commit_all_results:
     name: Commit Secondary Worker Results
     needs: merge_results
     if: needs.merge_results.outputs.has_results == 'true'
@@ -364,13 +364,12 @@ jobs:
       - name: Organize and Push to store-recon
         shell: bash
         env:
-          # Use the same PAT as primary for simplicity, assuming it has write access
           STORE_RECON_PAT: ${{ secrets.PAT_FOR_SECONDARY_ACCOUNT_REPO }}
           ACCOUNT2_USERNAME: ${{ secrets.ACCOUNT2_REPO_OWNER }}
           STORE: ${{ secrets.STORE }}
           CORRELATION_ID: ${{ github.event.inputs.primary_run_id }}
         run: |
-       
+          set -e
           RESULTS_DIR="${GITHUB_WORKSPACE}/final_results"
           if [ ! -d "$RESULTS_DIR" ] || [ -z "$(ls -A "$RESULTS_DIR")" ]; then
             echo "::warning:: Results directory is empty or does not exist. Nothing to commit."
@@ -392,10 +391,14 @@ jobs:
             dest_repo_dir="results/$domain_name"
             mkdir -p "$dest_repo_dir"
 
-            # --- SAFE MERGE 1: puredns_results.txt -> all_subdomains.txt ---
+            # --- SAFE MERGE 1 ---
             source_puredns_file="$domain_dir/puredns_results.txt"
             dest_all_subs_file="$dest_repo_dir/all_subdomains.txt"
             if [ -s "$source_puredns_file" ]; then
+              # FIX: Sanitize the file to remove NULL characters.
+              echo "  -> Sanitizing '$source_puredns_file'..."
+              tr -d '\0' < "$source_puredns_file" > "$source_puredns_file.tmp" && mv "$source_puredns_file.tmp" "$source_puredns_file"
+
               echo "  -> Merging puredns results into '$dest_all_subs_file'"
               temp_merged_file_1=$(mktemp)
               if [ -f "$dest_all_subs_file" ]; then
@@ -406,10 +409,14 @@ jobs:
               mv "$temp_merged_file_1" "$dest_all_subs_file"
             fi
             
-            # --- SAFE MERGE 2: subdomain_ports.txt -> puredns_result.txt ---
+            # --- SAFE MERGE 2 ---
             source_ports_file="$domain_dir/subdomain_ports.txt"
             dest_puredns_file="$dest_repo_dir/puredns_result.txt"
             if [ -s "$source_ports_file" ]; then
+              # FIX: Sanitize the file to remove NULL characters.
+              echo "  -> Sanitizing '$source_ports_file'..."
+              tr -d '\0' < "$source_ports_file" > "$source_ports_file.tmp" && mv "$source_ports_file.tmp" "$source_ports_file"
+
               echo "  -> Merging port data into '$dest_puredns_file'"
               temp_merged_file_2=$(mktemp)
               if [ -f "$dest_puredns_file" ]; then
@@ -421,14 +428,27 @@ jobs:
             fi
           done
           
-          if git diff --cached --quiet && git diff --quiet; then
+          # Stage changes before checking for a diff.
+          git add results/
+          
+          # Check if there are any staged changes.
+          if git diff --cached --quiet; then
             echo "No new unique data to commit from secondary worker."
             exit 0
           fi
           
-          echo "Committing and pushing changes from secondary worker to ${STORE}..."
-          git add results/
-          git commit -m "feat(worker-secondary): Add new assets from Correlation ID: ${CORRELATION_ID}"
-          git push -v origin main
-          echo "✅ Successfully pushed new secondary results to ${STORE}."
+          # --- RETRY LOOP FOR COMMIT AND PUSH ---
+          MAX_ATTEMPTS=5
+          for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
+            echo "[Attempt $i/$MAX_ATTEMPTS] Committing and pushing changes from secondary worker..."
+            git pull --rebase origin main
+            git commit -m "feat(worker-secondary): Add new assets from Correlation ID: ${CORRELATION_ID}" || true
+            if git push -v origin main; then
+              echo "✅ Successfully pushed new secondary results to ${STORE} on attempt $i."
+              exit 0
+            fi
+            echo "::warning:: Push failed on attempt $i. Retrying after a short delay..."
+            if [ $i -eq $MAX_ATTEMPTS ]; then echo "::error:: All $MAX_ATTEMPTS push attempts failed."; exit 1; fi
+            sleep $(( 5 * i ))
+          done
           
