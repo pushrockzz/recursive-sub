@@ -390,7 +390,6 @@ jobs:
             domain_name=$(basename "$domain_dir")
             dest_repo_dir="results/$domain_name"
             mkdir -p "$dest_repo_dir"
-
             # --- SAFE MERGE 1 ---
             source_puredns_file="$domain_dir/puredns_results.txt"
             dest_all_subs_file="$dest_repo_dir/all_subdomains.txt"
@@ -398,7 +397,6 @@ jobs:
               # FIX: Sanitize the file to remove NULL characters.
               echo "  -> Sanitizing '$source_puredns_file'..."
               tr -d '\0' < "$source_puredns_file" > "$source_puredns_file.tmp" && mv "$source_puredns_file.tmp" "$source_puredns_file"
-
               echo "  -> Merging puredns results into '$dest_all_subs_file'"
               temp_merged_file_1=$(mktemp)
               if [ -f "$dest_all_subs_file" ]; then
@@ -416,7 +414,6 @@ jobs:
               # FIX: Sanitize the file to remove NULL characters.
               echo "  -> Sanitizing '$source_ports_file'..."
               tr -d '\0' < "$source_ports_file" > "$source_ports_file.tmp" && mv "$source_ports_file.tmp" "$source_ports_file"
-
               echo "  -> Merging port data into '$dest_puredns_file'"
               temp_merged_file_2=$(mktemp)
               if [ -f "$dest_puredns_file" ]; then
@@ -437,12 +434,18 @@ jobs:
             exit 0
           fi
           
+          # --- FIX: Commit the changes BEFORE the loop ---
+          git commit -m "feat: Add new assets from Recursive recon scan from Correlation ID: ${CORRELATION_ID}"
+
           # --- RETRY LOOP FOR COMMIT AND PUSH ---
           MAX_ATTEMPTS=5
           for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
             echo "[Attempt $i/$MAX_ATTEMPTS] Committing and pushing changes from secondary worker..."
+            # Now this pull will succeed because there are no uncommitted changes
             git pull --rebase origin main
-            git commit -m "feat: Add new assets from Recursive recon scan from Correlation ID: ${CORRELATION_ID}" || true
+            
+            # The commit command is no longer needed here
+            
             if git push -v origin main; then
               echo "✅ Successfully pushed new secondary results to ${STORE} on attempt $i."
               exit 0
