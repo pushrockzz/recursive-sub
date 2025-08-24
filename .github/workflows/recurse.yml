@@ -49,7 +49,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.23'
 
       - name: Cache Go modules & binaries
         uses: actions/cache@v3
@@ -348,7 +348,7 @@ jobs:
           path: final_results/
           retention-days: 1
 
-commit_all_results:
+  commit_all_results:
     name: Commit Secondary Worker Results
     needs: merge_results
     if: needs.merge_results.outputs.has_results == 'true'
