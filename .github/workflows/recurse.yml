@@ -409,7 +409,13 @@ jobs:
             if [ -s "$source_puredns_file" ]; then
               # FIX: Sanitize the file to remove NULL characters.
               echo "  -> Sanitizing '$source_puredns_file'..."
-              tr -d '\0' < "$source_puredns_file" > "$source_puredns_file.tmp" && mv "$source_puredns_file.tmp" "$source_puredns_file"
+
+              <"$source_puredns_file" tr -d '\0' \
+                | grep '[[:alnum:]]' \
+                | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" \
+                > "$source_puredns_file.tmp" && mv "$source_puredns_file.tmp" "$source_puredns_file"
+
               echo "  -> Merging puredns results into '$dest_all_subs_file'"
               temp_merged_file_1=$(mktemp)
               if [ -f "$dest_all_subs_file" ]; then
@@ -426,7 +432,13 @@ jobs:
             if [ -s "$source_ports_file" ]; then
               # FIX: Sanitize the file to remove NULL characters.
               echo "  -> Sanitizing '$source_ports_file'..."
-              tr -d '\0' < "$source_ports_file" > "$source_ports_file.tmp" && mv "$source_ports_file.tmp" "$source_ports_file"
+
+              <"$source_ports_file" tr -d '\0' \
+                | grep '[[:alnum:]]' \
+                | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" \
+                > "$source_ports_file.tmp" && mv "$source_ports_file.tmp" "$source_ports_file"
+                
               echo "  -> Merging port data into '$dest_puredns_file'"
               temp_merged_file_2=$(mktemp)
               if [ -f "$dest_puredns_file" ]; then
