@@ -361,7 +361,7 @@ jobs:
           path: final_results/
           retention-days: 1
 
-  commit_all_results:
+commit_all_results:
     name: Commit Secondary Worker Results
     needs: merge_results
     if: always() && needs.merge_results.outputs.has_results == 'true'
@@ -382,8 +382,8 @@ jobs:
           STORE: ${{ secrets.STORE }}
           CORRELATION_ID: ${{ github.event.inputs.primary_run_id }}
         run: |
-          set -e
           RESULTS_DIR="${GITHUB_WORKSPACE}/final_results"
+          
           if [ ! -d "$RESULTS_DIR" ] || [ -z "$(ls -A "$RESULTS_DIR")" ]; then
             echo "::warning:: Results directory is empty or does not exist. Nothing to commit."
             exit 0
@@ -394,86 +394,124 @@ jobs:
           git config --global user.email "actions-bot@users.noreply.github.com"
           
           TMP_DIR="$(mktemp -d)"
-          git clone "https://x-access-token:${STORE_RECON_PAT}@github.com/${ACCOUNT2_USERNAME}/${STORE}.git" "$TMP_DIR"
+          if ! git clone "https://x-access-token:${STORE_RECON_PAT}@github.com/${ACCOUNT2_USERNAME}/${STORE}.git" "$TMP_DIR"; then
+            echo "::error:: Failed to clone the repository. Aborting the commit process."
+            exit 0
+          fi
           cd "$TMP_DIR"
           
-          echo "Merging new secondary results into the repository..."
-          for domain_dir in "${RESULTS_DIR}"/*; do
-            if [ ! -d "$domain_dir" ]; then continue; fi
-            domain_name=$(basename "$domain_dir")
-            dest_repo_dir="results/$domain_name"
-            mkdir -p "$dest_repo_dir"
-            # --- SAFE MERGE 1 ---
-            source_puredns_file="$domain_dir/puredns_results.txt"
-            dest_all_subs_file="$dest_repo_dir/all_subdomains.txt"
-            if [ -s "$source_ports_file" ]; then
-              <"$source_ports_file" tr -d '\0' \
-                | grep '[[:alnum:]]' \
-                | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-                | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" \
-                > "$source_ports_file.tmp" && mv "$source_ports_file.tmp" "$source_ports_file"
+          # --- Reusable function to merge artifact data ---
+          run_merge() {
+            echo "Merging new secondary results into the repository..."
+            for domain_dir in "${RESULTS_DIR}"/*; do
+              if [ ! -d "$domain_dir" ]; then continue; fi
+              domain_name=$(basename "$domain_dir")
+              dest_repo_dir="results/$domain_name"
+              mkdir -p "$dest_repo_dir"
+              
+              # --- MERGE BLOCK 1  ---
+              # Logic to process puredns results
+              source_puredns_file="$domain_dir/puredns_results.txt"
+              dest_all_subs_file="$dest_repo_dir/all_subdomains.txt"
+              # FIX: Correctly check if the puredns file exists and is not empty
+              if [ -s "$source_puredns_file" ]; then
+                # FIX: Correctly sanitize the puredns file, not the ports file
+                <"$source_puredns_file" tr -d '\0' \
+                  | grep '[[:alnum:]]' \
+                  | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                  | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" \
+                  > "$source_puredns_file.tmp" && mv "$source_puredns_file.tmp" "$source_puredns_file"
 
-              echo "  -> Merging puredns results into '$dest_all_subs_file'"
-              temp_merged_file_1=$(mktemp)
-              if [ -f "$dest_all_subs_file" ]; then
-                cat "$source_puredns_file" "$dest_all_subs_file" | sort -u > "$temp_merged_file_1"
-              else
-                sort -u "$source_puredns_file" > "$temp_merged_file_1"
+                echo "  -> Merging puredns results into '$dest_all_subs_file'"
+                temp_merged_file_1=$(mktemp)
+                if [ -f "$dest_all_subs_file" ]; then
+                  cat "$source_puredns_file" "$dest_all_subs_file" | sort -u > "$temp_merged_file_1"
+                else
+                  sort -u "$source_puredns_file" > "$temp_merged_file_1"
+                fi
+                mv "$temp_merged_file_1" "$dest_all_subs_file"
               fi
-              mv "$temp_merged_file_1" "$dest_all_subs_file"
-            fi
+              
+              # --- MERGE BLOCK 2 (Unchanged as per previous request) ---
+              # Logic to process port scan results
+              source_ports_file="$domain_dir/subdomain_ports.txt"
+              dest_puredns_file="$dest_repo_dir/puredns_result.txt"
+              if [ -s "$source_ports_file" ]; then
+                <"$source_ports_file" tr -d '\0' \
+                  | grep '[[:alnum:]]' \
+                  | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                  | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" \
+                  > "$source_ports_file.tmp" && mv "$source_ports_file.tmp" "$source_ports_file"
+                  
+                echo "  -> Merging port data into '$dest_puredns_file'"
+                temp_merged_file_2=$(mktemp)
+                if [ -f "$dest_puredns_file" ]; then
+                  cat "$source_ports_file" "$dest_puredns_file" | sort -u > "$temp_merged_file_2"
+                else
+                  sort -u "$source_ports_file" > "$temp_merged_file_2"
+                fi
+                mv "$temp_merged_file_2" "$dest_puredns_file"
+              fi
+            done
             
-            # --- SAFE MERGE 2 ---
-            source_ports_file="$domain_dir/subdomain_ports.txt"
-            dest_puredns_file="$dest_repo_dir/puredns_result.txt"
-            if [ -s "$source_ports_file" ]; then
-              # FIX: Sanitize the file to remove NULL characters.
-              echo "  -> Sanitizing '$source_ports_file'..."
+            # Stage all changes
+            git add results/
+          }
 
-              <"$source_ports_file" tr -d '\0' \
-                | grep '[[:alnum:]]' \
-                | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-                | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" \
-                > "$source_ports_file.tmp" && mv "$source_ports_file.tmp" "$source_ports_file"
-                
-              echo "  -> Merging port data into '$dest_puredns_file'"
-              temp_merged_file_2=$(mktemp)
-              if [ -f "$dest_puredns_file" ]; then
-                cat "$source_ports_file" "$dest_puredns_file" | sort -u > "$temp_merged_file_2"
-              else
-                sort -u "$source_ports_file" > "$temp_merged_file_2"
-              fi
-              mv "$temp_merged_file_2" "$dest_puredns_file"
-            fi
-          done
-          
-          # Stage changes before checking for a diff.
-          git add results/
-          
-          # Check if there are any staged changes.
+          # --- Main Logic ---
+
+          # 1. Perform the initial merge and check for changes
+          run_merge
           if git diff --cached --quiet; then
             echo "No new unique data to commit from secondary worker."
             exit 0
           fi
           
-          # --- FIX: Commit the changes BEFORE the loop ---
-          git commit -m "feat: Add new assets from Recursive recon scan from Correlation ID: ${CORRELATION_ID}"
-
-          # --- RETRY LOOP FOR COMMIT AND PUSH ---
-          MAX_ATTEMPTS=5
+          # 2. Commit the changes locally
+          echo "Committing changes locally..."
+          git commit -m "feat: Add new assets from Secondary Worker scan from Correlation ID: ${CORRELATION_ID}"
+          
+          # 3. Loop to sync and push the commit, with a robust retry mechanism
+          MAX_ATTEMPTS=10
           for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
-            echo "[Attempt $i/$MAX_ATTEMPTS] Committing and pushing changes from secondary worker..."
-            # Now this pull will succeed because there are no uncommitted changes
-            git pull --rebase origin main
+            echo "[Attempt $i/$MAX_ATTEMPTS] Pushing changes from secondary worker..."
             
-            # The commit command is no longer needed here
-            
+            # Optimistic push first
             if git push -v origin main; then
               echo "✅ Successfully pushed new secondary results to ${STORE} on attempt $i."
+              exit 0 
+            fi
+            
+            echo "::warning:: Push failed on attempt $i. Fetching latest changes from remote and re-applying local changes."
+            
+            # If push failed, fetch the latest state from the remote
+            git fetch origin main
+            if [ $? -ne 0 ]; then
+                echo "::error:: Git fetch failed. Cannot safely retry."
+                sleep $(( 5 * i ))
+                continue # Try again
+            fi
+            
+            # Reset local state to match remote, discarding the old local commit
+            git reset --hard origin/main
+            
+            # Re-run the merge logic on top of the fresh, updated branch
+            echo "Re-applying merge logic on top of the updated main branch..."
+            run_merge
+            
+            # Check if there are still changes to commit after the re-merge
+            if git diff --cached --quiet; then
+              echo "No net new changes to commit after syncing with remote. Another run may have already pushed these results."
               exit 0
             fi
-            echo "::warning:: Push failed on attempt $i. Retrying after a short delay..."
-            if [ $i -eq $MAX_ATTEMPTS ]; then echo "::error:: All $MAX_ATTEMPTS push attempts failed."; exit 0; fi
+            
+            # Re-commit the newly calculated changes
+            echo "Re-committing changes for retry attempt..."
+            git commit -m "feat: Add new assets from Secondary Worker scan from Correlation ID: ${CORRELATION_ID} (retry)"
+
             sleep $(( 5 * i ))
           done
+
+          echo "::error:: All $MAX_ATTEMPTS push attempts failed. The job will pass but the commit was NOT pushed."
+          exit 0 
           
