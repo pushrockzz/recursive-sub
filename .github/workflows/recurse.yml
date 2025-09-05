@@ -195,7 +195,7 @@ jobs:
           echo "▶ Running smap on non‑CDN IPs…"
           naabu -l "$TMP_NONCDN" -passive -o "$TMP_SMAP_NONCDN" -no-color -silent || true
           # The rustscan command itself remains unchanged as requested
-          rustscan -a "$TMP_NONCDN" -p "PORTS" --no-banner -t 5000 --tries 1 -u 50000 --scan-order "Random" -b 300 --greppable --accessible > "$TMP_RUSTSCAN" || true   
+          rustscan -a "$TMP_NONCDN" -p "$PORTS" --no-banner -t 5000 --tries 1 -u 50000 --scan-order "Random" -b 300 --greppable --accessible > "$TMP_RUSTSCAN" || true   
           
           cat "$TMP_RUSTSCAN" | awk -F ' -> ' '{ gsub(/[\[\]]/, "", $2); n = split($2, p, ","); for(i=1;i<=n;i++) print $1 ":" p[i] }' | anew -q "$TMP_SMAP_NONCDN" || true
           
