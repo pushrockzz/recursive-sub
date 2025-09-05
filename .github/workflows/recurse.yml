@@ -360,7 +360,7 @@ jobs:
           path: final_results/
           retention-days: 1
 
-commit_all_results:
+  commit_all_results:
     name: Commit Secondary Worker Results
     needs: merge_results
     if: always() && needs.merge_results.outputs.has_results == 'true'
