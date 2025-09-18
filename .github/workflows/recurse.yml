@@ -130,16 +130,30 @@ jobs:
         run: |
           RAW_RESULTS_FILE="raw_subdomain_results.txt"
           PUREDNS_FILE="puredns_file.txt"
+          WILDCARD_FILE="wildcard_file.txt"
           RESOLVED_FILE="puredns_resolved.txt"
           TMP_CLEANMASSDNS=$(mktemp)
           MASSDNS="massdns.txt"
           MASSDNS_FILE="massdns_file.txt"
           if [ ! -s "$RAW_RESULTS_FILE" ]; then echo "INFO: Raw results file is empty. Nothing to resolve."; touch "$RESOLVED_FILE"; exit 0; fi
+          
           wget -qO resolvers.txt https://raw.githubusercontent.com/and0x00/resolvers.txt/refs/heads/main/resolvers.txt
-          puredns resolve "$RAW_RESULTS_FILE" -r resolvers.txt --rate-limit 3000 --skip-validation --skip-wildcard-filter --write "$PUREDNS_FILE" --write-massdns "$MASSDNS" --quiet >/dev/null 2>&1
+          
+          puredns resolve "$RAW_RESULTS_FILE" -r resolvers.txt --rate-limit 3000 --wilcard-tests 300 --wildcard-batch 100000 --skip-validation --write "$PUREDNS_FILE" --write-wilcards "$WILDCARD_FILE" --write-massdns "$MASSDNS" --quiet >/dev/null 2>&1
+
+         
+          echo "✅ Downloading .scope file from recon-automation repo"
+
+          wget -qO .scope https://raw.githubusercontent.com/Pcoder7/recon-automation/refs/heads/main/.scope 
+
+          echo  " $(wc -l < .scope) lines of scope file is downloaded " 
+          
           cat "$PUREDNS_FILE" | inscope -s .scope > "$RESOLVED_FILE" || true
+          
           awk 'NF { sub(/\.$/,"",$1); print }' "$MASSDNS" > "$TMP_CLEANMASSDNS"
+          
           awk ' {gsub(/\r$/,"");sub(/^[ \t]+/,"");sub(/[ \t]+$/,"")} FNR==NR{if($0)patterns[++c]=$0;next} !setup{regex="";for(i=1;i<=c;i++){regex=regex (i>1?"|":"") "("patterns[i]")"};if(regex=="")regex="^\b$";setup=1} $2=="A" && $1~regex ' .scope "$TMP_CLEANMASSDNS" | anew -q "$MASSDNS_FILE"
+          
           rm -f "$TMP_CLEANMASSDNS" "$MASSDNS" "$PUREDNS_FILE"
 
       - name: Map subdomains to ports with CDN filtering
