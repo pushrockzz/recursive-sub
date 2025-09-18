@@ -135,6 +135,7 @@ jobs:
           TMP_CLEANMASSDNS=$(mktemp)
           MASSDNS="massdns.txt"
           MASSDNS_FILE="massdns_file.txt"
+          
           if [ ! -s "$RAW_RESULTS_FILE" ]; then echo "INFO: Raw results file is empty. Nothing to resolve."; touch "$RESOLVED_FILE"; exit 0; fi
           
           wget -qO resolvers.txt https://raw.githubusercontent.com/and0x00/resolvers.txt/refs/heads/main/resolvers.txt
@@ -162,7 +163,6 @@ jobs:
         run: |
       
           trap '' SIGPIPE
-
           MASSDNS_FILE="massdns_file.txt"
           SMAP_FILE="smap.txt"
           OUTPUT="subdomain_ports.txt"
@@ -212,11 +212,11 @@ jobs:
           rustscan -a "$TMP_NONCDN" -p "$PORTS" --no-banner -t 5000 --tries 1 -u 50000 --scan-order "Random" -b 300 --greppable --accessible > "$TMP_RUSTSCAN" || true   
           
           cat "$TMP_RUSTSCAN" | awk -F ' -> ' '{ gsub(/[\[\]]/, "", $2); n = split($2, p, ","); for(i=1;i<=n;i++) print $1 ":" p[i] }' | anew -q "$TMP_SMAP_NONCDN" || true
-          
-          
+                    
           echo "✅ All done. TMP_SMAP_NONCDN contains $(wc -l < "$TMP_SMAP_NONCDN") IP" 
 
           echo "==================================================================="
+          
           head -n5 "$TMP_SMAP_NONCDN"
 
           echo "==================================================================="
@@ -229,11 +229,13 @@ jobs:
           echo "✅ All done. SMAP_FILE contains $(wc -l < "$SMAP_FILE") IP" 
 
           echo "==================================================================="
+          
           head -n5 "$SMAP_FILE"
 
           echo "==================================================================="
 
           echo "▶ Joining with $SMAP_FILE to produce subdomain:port or subdomain…"
+          
           awk -F: '
             NF==2 { print $1, $2 }    # IP:PORT → IP PORT
             NF==1 { print $1, ""  }   # bare IP → IP <empty>
