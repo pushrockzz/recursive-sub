@@ -473,7 +473,7 @@ jobs:
             git add results/
           }
 
-          # --- Main Logic ---
+         
 
           # 1. Perform the initial merge and check for changes
           run_merge
