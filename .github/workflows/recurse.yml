@@ -331,23 +331,15 @@ jobs:
                 mv "$temp_merged_file_1" "$dest_all_subs_file"
               fi
               
-              # MERGE BLOCK 2 
-              source_massdns_file="$domain_dir/massdns_file.txt"
+              # FIX: Added MERGE BLOCK 2 for massdns with full sanitization
+              
+              source_massdns_file="$domain_dir/massdns_file.txt"; 
               dest_massdns_file="$dest_repo_dir/massdns.txt"
               if [ -s "$source_massdns_file" ]; then
-                <"$source_massdns_file" tr -d '\0' \
-                  | grep '[[:alnum:]]' \
-                  | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-                  | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" \
-                  > "$source_massdns_file.tmp" && mv "$source_massdns_file.tmp" "$source_massdns_file"
-               
-                echo "  -> Merging port data into '$dest_massdns_file'"
-                temp_merged_file_2=$(mktemp)
-                if [ -f "$dest_massdns_file" ]; then cat "$source_massdns_file" "$dest_massdns_file" | sort -u > "$temp_merged_file_2"; else sort -u "$source_massdns_file" > "$temp_merged_file_2"; fi
-                mv "$temp_merged_file_2" "$dest_massdns_file"
-                            
+                <"$source_massdns_file" tr -d '\0'|grep '[[:alnum:]]'|sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'|sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" > tmp.txt && mv tmp.txt "$source_massdns_file"
+                cat "$source_massdns_file" "$dest_massdns_file" 2>/dev/null | sort -u > tmp.txt && mv tmp.txt "$dest_massdns_file"
               fi
-            done  
+            done         
             
             # Stage all changes
             git add results/
