@@ -223,39 +223,25 @@ jobs:
             echo "found=false" >> $GITHUB_OUTPUT
           fi
           
-
       - name: Consolidate all results into root domain folders
         id: consolidate
-        shell: bash
         run: |
-          
           mkdir -p final_results
-          if [ ! -d "temp-aggregated-results" ] || [ -z "$(ls -A temp-aggregated-results)" ]; then
-            echo "::warning:: No result artifacts were found from the secondary worker. Nothing to merge."
-            echo "has_results=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
           
-          echo "INFO: Aggregating all downloaded secondary worker results..."
-          for filepath in $(find temp-aggregated-results -type f -name "puredns_results.txt"); do
-            parent_domain=$(basename "$(dirname "$filepath")")
-            dest_file="final_results/$parent_domain/puredns_results.txt"
-            mkdir -p "final_results/$parent_domain"
-            cat "$filepath" >> "$dest_file"
-          done
+          # Aggregate puredns_results.txt files
           
-          for filepath in $(find temp-aggregated-results -type f -name "subdomain_ports.txt"); do
-            parent_domain=$(basename "$(dirname "$filepath")")
-            dest_file="final_results/$parent_domain/subdomain_ports.txt"
-            mkdir -p "final_results/$parent_domain"
-            cat "$filepath" >> "$dest_file"
-          done
+          find temp-aggregated-results -type f -name "puredns_results.txt" | while read -r f; do D=$(basename "$(dirname "$f")"); mkdir -p "final_results/$D"; cat "$f" >> "final_results/$D/puredns_results.txt"; done
+         
+          # Aggregate massdns_file.txt files
           
-          echo "INFO: De-duplicating all aggregated files..."
-          for final_file in $(find final_results -type f -name "*.txt"); do
-              sort -u -o "$final_file" "$final_file"
-          done
+          find temp-aggregated-results -type f -name "massdns_file.txt" | while read -r f; do D=$(basename "$(dirname "$f")"); mkdir -p "final_results/$D"; cat "$f" >> "final_results/$D/massdns_file.txt"; done
           
+          # De-duplicate all aggregated files
+          find final_results -type f -name "*.txt" -exec sort -u -o {} {} \;
+          
+         
+          # Final guard clause to check if the process resulted in any actual data.
+         
           if [ -z "$(ls -A final_results)" ]; then
             echo "::warning:: Result artifacts were downloaded, but they contained no valid data to merge."
             echo "has_results=false" >> $GITHUB_OUTPUT
@@ -263,7 +249,8 @@ jobs:
           fi
           
           echo "has_results=true" >> $GITHUB_OUTPUT
-          echo "✅ Successfully consolidated results from the secondary worker."
+          echo "✅ Successfully consolidated results from all accounts."
+          ls -R final_results
 
       - name: Upload Final Consolidated Secondary Artifact
         if: steps.consolidate.outputs.has_results == 'true'
