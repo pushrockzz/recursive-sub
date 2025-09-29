@@ -368,7 +368,9 @@ jobs:
               mkdir -p "$dest_repo_dir"
               
               # --- MERGE BLOCK 1  ---
+
               # Logic to process puredns results
+              
               source_puredns_file="$domain_dir/puredns_results.txt"
               dest_all_subs_file="$dest_repo_dir/all_subdomains.txt"
               # FIX: Correctly check if the puredns file exists and is not empty
@@ -389,16 +391,41 @@ jobs:
                 fi
                 mv "$temp_merged_file_1" "$dest_all_subs_file"
               fi
+
+                  # --- MERGE BLOCK 2  ---
               
-              # FIX: Added MERGE BLOCK 2 for massdns with full sanitization
+              # Logic to process massdns results
               
-              source_massdns_file="$domain_dir/massdns_file.txt"; 
-              dest_massdns_file="$dest_repo_dir/massdns.txt"
+              source_massdns_file="$domain_dir/massdns_file.txt"
+              dest_massdns_file="$dest_repo_dir/massdns.txt"   
+
               if [ -s "$source_massdns_file" ]; then
-                <"$source_massdns_file" tr -d '\0'|grep '[[:alnum:]]'|sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'|sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" > tmp.txt && mv tmp.txt "$source_massdns_file"
-                cat "$source_massdns_file" "$dest_massdns_file" 2>/dev/null | sort -u > tmp.txt && mv tmp.txt "$dest_massdns_file"
-              fi
-            done         
+                echo "  -> Found massdns source: $source_massdns_file"
+
+                # sanitize source in an atomic temp file
+                tmp_src="$(mktemp)"
+                <"$source_massdns_file" tr -d '\0' \
+                  | grep '[[:alnum:]]' \
+                  | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                  | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g" \
+                  > "$tmp_src" && mv -f "$tmp_src" "$source_massdns_file"
+
+                # after sanitization, check again
+                if [ ! -s "$source_massdns_file" ]; then
+                  echo "    -> After sanitization, $source_massdns_file is empty; skipping merge."
+                else
+                  tmp_dest="$(mktemp)"
+                  if [ -f "$dest_massdns_file" ] && [ -s "$dest_massdns_file" ]; then
+                    cat "$source_massdns_file" "$dest_massdns_file" | sort -u > "$tmp_dest"
+                  else
+                    sort -u "$source_massdns_file" > "$tmp_dest"
+                  fi
+                  mv -f "$tmp_dest" "$dest_massdns_file"
+                  echo "    -> Wrote merged massdns to $dest_massdns_file (lines: $(wc -l < "$dest_massdns_file"))"
+                fi
+              else
+                echo "  -> No massdns source found or file empty: $source_massdns_file"
+              fi   
             
             # Stage all changes
             git add results/
