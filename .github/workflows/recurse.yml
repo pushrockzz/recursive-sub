@@ -90,6 +90,17 @@ jobs:
             exit 0
           fi
 
+      - name: Install Tools
+        run: |
+          if ! command -v smap >/dev/null; then go install -v github.com/s0md3v/smap/cmd/smap@latest; fi
+          if ! command -v inscope >/dev/null; then go install -v github.com/tomnomnom/hacks/inscope@latest; fi
+          if ! command -v anew >/dev/null; then go install -v github.com/tomnomnom/anew@latest; fi
+          if ! command -v cut-cdn >/dev/null; then go install github.com/ImAyrix/cut-cdn@latest; fi
+          if ! command -v naabu >/dev/null; then go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest; fi
+          pip3 install --no-cache-dir ipaddress
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+
       - name: Run Findomain with GNU Parallel on Chunk
         id: run_parallel
         shell: bash
@@ -114,15 +125,6 @@ jobs:
           cat "$SUB_CHUNK_DIR/raw_results"/result_*.txt | sort -u > "$RAW_RESULTS_FILE"
           echo "✅ All done. Consolidated into $RAW_RESULTS_FILE with $(wc -l < "$RAW_RESULTS_FILE") subdomains"
 
-      - name: Install Tools
-        run: |
-          if ! command -v smap >/dev/null; then go install -v github.com/s0md3v/smap/cmd/smap@latest; fi
-          if ! command -v inscope >/dev/null; then go install -v github.com/tomnomnom/hacks/inscope@latest; fi
-          if ! command -v anew >/dev/null; then go install -v github.com/tomnomnom/anew@latest; fi
-          if ! command -v cut-cdn >/dev/null; then go install github.com/ImAyrix/cut-cdn@latest; fi
-          if ! command -v naabu >/dev/null; then go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest; fi
-          pip3 install --no-cache-dir ipaddress
-          echo "$HOME/go/bin" >> $GITHUB_PATH
 
       - name: Resolve Discovered Subdomains with PureDNS
         id: run_puredns
@@ -426,6 +428,8 @@ jobs:
               else
                 echo "  -> No massdns source found or file empty: $source_massdns_file"
               fi   
+
+            done
             
             # Stage all changes
             git add results/
