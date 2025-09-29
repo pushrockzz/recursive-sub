@@ -142,7 +142,7 @@ jobs:
                         exit 0
                 fi
                 
-                wget -q0 resolvers.txt https://raw.githubusercontent.com/rix4uni/resolvers/refs/heads/main/resolvers.txt
+                wget -qO resolvers.txt https://raw.githubusercontent.com/rix4uni/resolvers/refs/heads/main/resolvers.txt
                 
                 wget -qO resolvers-trusted.txt https://raw.githubusercontent.com/and0x00/resolvers.txt/refs/heads/main/resolvers.txt
                           
