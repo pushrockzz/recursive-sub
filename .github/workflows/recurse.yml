@@ -405,7 +405,6 @@ jobs:
           }
 
          
-
           # 1. Perform the initial merge and check for changes
           run_merge
           if git diff --cached --quiet; then
@@ -415,7 +414,7 @@ jobs:
           
           # 2. Commit the changes locally
           echo "Committing changes locally..."
-          git commit -m "feat: Add new assets from Secondary Worker scan from Correlation ID: ${CORRELATION_ID}"
+          git commit -m "feat: Add new assets from Recursive recon scan from Correlation ID: ${CORRELATION_ID}"
           
           # 3. Loop to sync and push the commit, with a robust retry mechanism
           MAX_ATTEMPTS=10
@@ -453,7 +452,7 @@ jobs:
             
             # Re-commit the newly calculated changes
             echo "Re-committing changes for retry attempt..."
-            git commit -m "feat: Add new assets from Secondary Worker scan from Correlation ID: ${CORRELATION_ID} (retry)"
+            git commit -m "feat: Add new assets from Recursive recon scan from Correlation ID: ${CORRELATION_ID} (retry)"
 
             sleep $(( 5 * i ))
           done
